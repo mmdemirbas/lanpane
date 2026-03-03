@@ -202,10 +202,12 @@ function setupEventSource() {
       state.devices = data.devices || [];
       state.role = data.role || state.role;
       if (data.token) state.token = data.token;
+      if (typeof data.needsToken === 'boolean') state.needsToken = data.needsToken;
       state.connected = true;
       state.selectedPaneId = selId;
       renderSidebar();
       renderStatusBar();
+      renderOverlay();
       // Sync editor if not focused
       const editor = document.getElementById('editor');
       if (editor && document.activeElement !== editor) {

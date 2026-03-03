@@ -101,11 +101,19 @@ func setupSSE(node *Node, mux *http.ServeMux) {
 }
 
 func sendSSEState(w http.ResponseWriter, flusher http.Flusher, node *Node) {
+	needsToken := false
+	if node.GetRole() == "spoke" && node.IsAuthRequired() && (normalizeToken(node.store.config.SavedToken) == "" || node.SpokeNeedsToken()) {
+		needsToken = true
+	}
+
 	data := map[string]interface{}{
-		"panes":   node.store.GetPanes(),
-		"devices": node.getDevices(),
-		"role":    node.GetRole(),
-		"token":   node.token,
+		"panes":        node.store.GetPanes(),
+		"devices":      node.getDevices(),
+		"role":         node.GetRole(),
+		"token":        node.token,
+		"needsToken":   needsToken,
+		"authMode":     node.store.config.AuthMode,
+		"authRequired": node.IsAuthRequired(),
 	}
 	jsonData, _ := json.Marshal(data)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)
