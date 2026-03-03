@@ -9,7 +9,8 @@ let state = {
   deviceId: '',
   needsToken: false,
   connected: false,
-  previewing: false, // preview toggle
+  previewByPaneId: {},
+  sidebarCollapsed: false,
 };
 
 let autoNameTimer = null;
@@ -18,6 +19,7 @@ let eventSource = null;
 let autoDetectTimer = null;
 let highlightFrame = null;
 let lastHighlightKey = '';
+let draggedPaneId = null;
 
 function scheduleAutoName(pane) {
   // Only auto-name if pane doesn't have an explicit name
@@ -105,6 +107,7 @@ function detectLanguage(content) {
 
 // ---- Init ----
 async function init() {
+  loadSidebarState();
   await fetchStatus();
   try {
     setupEventSource();
@@ -112,6 +115,51 @@ async function init() {
     state.connected = false;
   }
   setupListeners();
+  render();
+}
+
+function loadSidebarState() {
+  try {
+    state.sidebarCollapsed = localStorage.getItem('lanpane.sidebarCollapsed') === '1';
+  } catch (e) {
+    state.sidebarCollapsed = false;
+  }
+  applySidebarState();
+}
+
+function applySidebarState() {
+  const app = document.getElementById('app');
+  const btn = document.getElementById('sidebar-toggle-btn');
+  if (!app || !btn) return;
+
+  app.classList.toggle('sidebar-collapsed', state.sidebarCollapsed);
+  btn.title = state.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  btn.setAttribute('aria-label', btn.title);
+}
+
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  applySidebarState();
+  try {
+    localStorage.setItem('lanpane.sidebarCollapsed', state.sidebarCollapsed ? '1' : '0');
+  } catch (e) {}
+}
+
+function isPanePreviewing(paneId) {
+  if (Object.prototype.hasOwnProperty.call(state.previewByPaneId, paneId)) {
+    return !!state.previewByPaneId[paneId];
+  }
+  const pane = state.panes.find((p) => p.id === paneId);
+  return pane ? pane.language === 'markdown' : false;
+}
+
+function setPanePreviewing(paneId, previewing) {
+  if (!paneId) return;
+  state.previewByPaneId[paneId] = !!previewing;
+}
+
+function selectPane(paneId) {
+  state.selectedPaneId = paneId;
   render();
 }
 
@@ -138,6 +186,7 @@ async function createPane(opts = {}) {
     type: 'code',
     content: opts.content || '',
     language: opts.language || 'plaintext',
+    order: Date.now(),
   };
   const res = await fetch(API + '/api/panes', {
     method: 'POST',
@@ -147,7 +196,7 @@ async function createPane(opts = {}) {
   const created = await res.json();
   state.panes.unshift(created);
   state.selectedPaneId = created.id;
-  state.previewing = false;
+  setPanePreviewing(created.id, created.language === 'markdown');
   render();
   focusEditor();
   return created;
@@ -166,9 +215,9 @@ async function updatePane(pane) {
 async function deletePane(id) {
   await fetch(API + '/api/panes/' + id, { method: 'DELETE' });
   state.panes = state.panes.filter(p => p.id !== id);
+  delete state.previewByPaneId[id];
   if (state.selectedPaneId === id) {
-    state.selectedPaneId = null;
-    state.previewing = false;
+    state.selectedPaneId = state.panes.length ? state.panes[0].id : null;
   }
   render();
 }
@@ -214,7 +263,7 @@ function setupEventSource() {
         const pane = getSelectedPane();
         if (pane) {
           editor.value = pane.content || '';
-          if (state.previewing) renderPreview(pane);
+          if (isPanePreviewing(pane.id)) renderPreview(pane);
           else renderEditorHighlight(pane);
         }
       }
@@ -252,10 +301,11 @@ function renderSidebar() {
     const icon = langIcon(p.language);
     const name = p.name || 'Untitled';
     const time = timeAgo(p.updatedAt);
-    return `<div class="pane-item ${active}" data-id="${p.id}">
+    return `<div class="pane-item ${active}" data-id="${p.id}" draggable="true">
       <span class="pane-item-icon">${icon}</span>
       <span class="pane-item-name">${esc(name)}</span>
       <span class="pane-item-time">${time}</span>
+      <button class="pane-item-delete" data-delete-id="${p.id}" title="Delete pane" aria-label="Delete pane">x</button>
     </div>`;
   }).join('');
 
@@ -310,14 +360,15 @@ function renderEditor() {
 
   // Preview toggle
   const previewBtn = document.getElementById('preview-btn');
-  previewBtn.classList.toggle('active', state.previewing);
+  const previewing = isPanePreviewing(pane.id);
+  previewBtn.classList.toggle('active', previewing);
 
   // Editor & preview
   const editor = document.getElementById('editor');
   const editorLayer = document.getElementById('editor-layer');
   const preview = document.getElementById('preview');
 
-  if (state.previewing) {
+  if (previewing) {
     editorLayer.style.display = 'none';
     preview.classList.remove('hidden');
     renderPreview(pane);
@@ -406,15 +457,66 @@ function syncEditorScroll() {
 
 // ---- Listeners ----
 function setupListeners() {
+  document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
   document.getElementById('new-pane-btn').addEventListener('click', () => createPane());
 
   document.getElementById('pane-list').addEventListener('click', (e) => {
+    const delBtn = e.target.closest('.pane-item-delete');
+    if (delBtn) {
+      const id = delBtn.dataset.deleteId;
+      if (id && confirm('Delete this pane?')) {
+        deletePane(id);
+      }
+      return;
+    }
     const item = e.target.closest('.pane-item');
     if (item) {
-      state.selectedPaneId = item.dataset.id;
-      state.previewing = false;
-      render();
+      selectPane(item.dataset.id);
     }
+  });
+
+  document.getElementById('pane-list').addEventListener('dragstart', (e) => {
+    const item = e.target.closest('.pane-item');
+    if (!item) return;
+    draggedPaneId = item.dataset.id;
+    item.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggedPaneId);
+    }
+  });
+
+  document.getElementById('pane-list').addEventListener('dragover', (e) => {
+    const item = e.target.closest('.pane-item');
+    if (!item || item.dataset.id === draggedPaneId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = item.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    item.classList.toggle('drag-over-before', !after);
+    item.classList.toggle('drag-over-after', after);
+  });
+
+  document.getElementById('pane-list').addEventListener('dragleave', (e) => {
+    const item = e.target.closest('.pane-item');
+    if (!item) return;
+    item.classList.remove('drag-over-before', 'drag-over-after');
+  });
+
+  document.getElementById('pane-list').addEventListener('drop', (e) => {
+    const item = e.target.closest('.pane-item');
+    if (!item || !draggedPaneId || item.dataset.id === draggedPaneId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = item.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    reorderPanes(draggedPaneId, item.dataset.id, after);
+    clearDragMarkers();
+  });
+
+  document.getElementById('pane-list').addEventListener('dragend', () => {
+    clearDragMarkers();
+    draggedPaneId = null;
   });
 
   document.getElementById('pane-name').addEventListener('input', (e) => {
@@ -432,7 +534,7 @@ function setupListeners() {
     if (pane) {
       pane.language = e.target.value;
       debouncedSave(pane);
-      if (state.previewing) renderPreview(pane);
+      if (isPanePreviewing(pane.id)) renderPreview(pane);
       else renderEditorHighlight(pane);
     }
   });
@@ -478,13 +580,6 @@ function setupListeners() {
     }
   });
 
-  // Delete
-  document.getElementById('delete-btn').addEventListener('click', () => {
-    if (state.selectedPaneId && confirm('Delete this pane?')) {
-      deletePane(state.selectedPaneId);
-    }
-  });
-
   // Token
   document.getElementById('token-submit').addEventListener('click', () => {
     const val = document.getElementById('token-input').value.trim();
@@ -511,13 +606,55 @@ function setupListeners() {
       e.preventDefault();
       if (getSelectedPane()) togglePreview();
     }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      toggleSidebar();
+    }
   });
 }
 
+function clearDragMarkers() {
+  document.querySelectorAll('.pane-item').forEach((el) => {
+    el.classList.remove('dragging', 'drag-over-before', 'drag-over-after');
+  });
+}
+
+function reorderPanes(sourceId, targetId, placeAfter) {
+  const sourceIndex = state.panes.findIndex((p) => p.id === sourceId);
+  const targetIndex = state.panes.findIndex((p) => p.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+
+  const next = [...state.panes];
+  const [moved] = next.splice(sourceIndex, 1);
+  let insertIndex = targetIndex;
+  if (sourceIndex < targetIndex) insertIndex -= 1;
+  if (placeAfter) insertIndex += 1;
+  next.splice(Math.max(0, insertIndex), 0, moved);
+
+  const base = Date.now();
+  next.forEach((pane, idx) => {
+    pane.order = base - idx;
+  });
+
+  state.panes = next;
+  renderSidebar();
+  savePaneOrder(next);
+}
+
+async function savePaneOrder(panes) {
+  try {
+    await Promise.all(panes.map((pane) => updatePane(pane)));
+  } catch (e) {
+    console.error('Pane reorder save failed:', e);
+  }
+}
+
 function togglePreview() {
-  state.previewing = !state.previewing;
+  const pane = getSelectedPane();
+  if (!pane) return;
+  setPanePreviewing(pane.id, !isPanePreviewing(pane.id));
   renderEditor();
-  if (!state.previewing) focusEditor();
+  if (!isPanePreviewing(pane.id)) focusEditor();
 }
 
 function scheduleAutoDetect(pane) {
@@ -527,7 +664,7 @@ function scheduleAutoDetect(pane) {
     if (detected && detected !== pane.language) {
       pane.language = detected;
       document.getElementById('lang-select').value = detected;
-      if (!state.previewing) renderEditorHighlight(pane);
+      if (!isPanePreviewing(pane.id)) renderEditorHighlight(pane);
       // Don't save just for language change during typing — it'll save with next content save
     }
   }, 1500);
@@ -556,8 +693,8 @@ async function handlePaste(e) {
       const editor = document.getElementById('editor');
 
       // If in preview, switch to edit first
-      if (state.previewing) {
-        state.previewing = false;
+      if (isPanePreviewing(pane.id)) {
+        setPanePreviewing(pane.id, false);
         renderEditor();
       }
 
@@ -593,8 +730,8 @@ async function handleDrop(e) {
     pane = getSelectedPane();
   }
 
-  if (state.previewing) {
-    state.previewing = false;
+  if (isPanePreviewing(pane.id)) {
+    setPanePreviewing(pane.id, false);
     renderEditor();
   }
 
@@ -631,7 +768,11 @@ function getSelectedPane() {
 }
 
 function sortPanes(panes) {
-  return panes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return panes.sort((a, b) => {
+    const orderDiff = (b.order || 0) - (a.order || 0);
+    if (orderDiff !== 0) return orderDiff;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  });
 }
 
 function focusEditor() {

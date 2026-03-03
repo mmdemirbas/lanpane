@@ -97,6 +97,9 @@ func SetupHTTP(node *Node) http.Handler {
 			if pane.CreatedAt == 0 {
 				pane.CreatedAt = nowMs()
 			}
+			if pane.Order == 0 {
+				pane.Order = nowMs()
+			}
 			pane.UpdatedAt = nowMs()
 			pane.Version = nowMs()
 			if pane.CreatedBy == "" {
@@ -128,6 +131,14 @@ func SetupHTTP(node *Node) http.Handler {
 			var pane Pane
 			json.NewDecoder(r.Body).Decode(&pane)
 			pane.ID = id
+			if pane.Order == 0 {
+				if existing := node.store.GetPane(id); existing != nil {
+					pane.Order = existing.Order
+				}
+				if pane.Order == 0 {
+					pane.Order = nowMs()
+				}
+			}
 			pane.UpdatedAt = nowMs()
 			pane.Version = nowMs()
 			node.store.UpsertPane(pane)
