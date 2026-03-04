@@ -6,12 +6,6 @@ import (
 	"time"
 )
 
-// Pane types
-const (
-	PaneCode     = "code"
-	PaneMarkdown = "markdown"
-)
-
 type Pane struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`

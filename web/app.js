@@ -463,16 +463,18 @@ function renderPreview(pane) {
   const content = pane.content || '';
   const lang = pane.language || 'plaintext';
 
-  if (lang === 'markdown') {
+  if (lang === 'markdown' && typeof marked !== 'undefined') {
     try {
       const rawHTML = marked.parse(content);
       preview.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHTML) : rawHTML;
-      preview.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+      if (typeof hljs !== 'undefined') {
+        preview.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+      }
       enhanceMarkdownCodeBlocks(preview);
     } catch (e) {
       preview.textContent = content;
     }
-  } else if (lang === 'plaintext') {
+  } else if (lang === 'plaintext' || typeof hljs === 'undefined') {
     const ws = state.wrapEnabled ? 'pre-wrap' : 'pre';
     preview.innerHTML = `<pre style="white-space:${ws};margin:0">${esc(content)}</pre>`;
   } else {
@@ -530,7 +532,7 @@ function renderEditorHighlight(pane) {
     }
 
     try {
-      if (lang === 'plaintext') {
+      if (lang === 'plaintext' || typeof hljs === 'undefined') {
         codeEl.className = 'hljs language-plaintext';
         codeEl.innerHTML = esc(content);
       } else {
@@ -800,7 +802,7 @@ async function savePaneOrder(panes) {
   try {
     await Promise.all(panes.map((pane) => updatePane(pane)));
   } catch (e) {
-    console.error('Pane reorder save failed:', e);
+    showToast('Reorder failed — check connection', true);
   }
 }
 

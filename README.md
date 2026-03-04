@@ -12,33 +12,32 @@ cd lanpane
 go run .
 ```
 
-Open `https://localhost:7753` in your browser. That's it.
+Open `https://localhost:7753` in your browser (accept the self-signed certificate warning once). That's it.
 
 ## How It Works
 
-1. **First device** starts → becomes the **hub**, shows a 6-character access code
+1. **First device** starts → becomes the **hub**
 2. **Other devices** start → auto-discover the hub via UDP broadcast, connect as **spokes**
 3. If direct spoke → hub connection is blocked, spoke asks hub to dial back (reverse connect)
-4. If auth is required, enter the access code on each spoke (one-time, saved for reconnects)
-5. All panes sync in real-time across all devices
+4. All panes sync in real-time across all devices
 
 ## Features
 
 - **Mixed-content panes** — each pane holds text, code, markdown, images, and files
 - **Paste images** — `Ctrl+V` / `Cmd+V` an image from clipboard → instantly shared
-- **Drag & drop files** — drop files into the UI
+- **Drag & drop files** — drop files into the UI, or use the file chooser on mobile
 - **Syntax highlighting** — live highlighting in the editor with language auto-detection
 - **Markdown preview** — rendered markdown with per-code-block copy buttons
-- **Word wrap toggle** — `Ctrl+W` / `Cmd+W` to toggle wrap in editor and preview
-- **Tab management** — drag-and-drop reordering, per-tab preview state, inline delete
-- **Collapsible sidebar** — `Ctrl+B` / `Cmd+B` to toggle, state persisted
+- **Word wrap toggle** — `Alt+W` to toggle wrap in editor and preview
+- **Tab management** — drag-and-drop reordering, per-tab preview state, inline delete confirmation
+- **Collapsible sidebar** — toggle to save screen space, state persisted
 - **Auto-naming** — panes auto-title from content (respects manual edits)
 - **Multi-device** — not limited to two devices
 - **Auto-discovery** — devices find each other via UDP broadcast, no IP address needed
-- **Configurable auth** — run with optional auth for frictionless LAN use, or require a token
 - **Dual-direction connect** — handles one-way firewall rules via reverse hub → spoke dialing
-- **HTTPS everywhere** — all traffic (UI, API, inter-node) uses TLS with auto-generated self-signed certificates
+- **HTTPS everywhere** — all traffic (UI, API, inter-node WebSocket) uses TLS with auto-generated self-signed certificates
 - **Offline persistence** — panes persist locally, survive restarts
+- **Mobile friendly** — responsive layout, touch targets, file chooser
 
 ## Architecture
 
@@ -46,16 +45,16 @@ Open `https://localhost:7753` in your browser. That's it.
 Hub-Spoke with auto-election:
   ┌─────┐  UDP broadcast    ┌──────┐
   │Spoke│◄─────────────────►│ Hub  │
-  │:77xx│  WebSocket+HTTP   │:7753 │
+  │:77xx│  WSS (WebSocket)  │:7753 │
   └─────┘                   └──────┘
                                 ▲
-  ┌─────┐  WebSocket+HTTP       │
+  ┌─────┐  WSS (WebSocket)      │
   │Spoke│◄──────────────────────┘
   │:77xx│
   └─────┘
 ```
 
-- **Hub** runs the WebSocket server and relays changes
+- **Hub** runs the HTTPS/WebSocket server and relays changes
 - **Spokes** connect out to the hub (works through firewalls)
 - If no hub exists, the first device self-promotes
 - All communication is outbound from spokes → works even when incoming ports are blocked

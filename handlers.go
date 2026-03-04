@@ -59,7 +59,7 @@ func SetupHTTP(node *Node) http.Handler {
 				pane.ID = generateID()
 			}
 			if pane.Type == "" {
-				pane.Type = PaneMarkdown
+				pane.Type = "code"
 			}
 			if pane.CreatedAt == 0 {
 				pane.CreatedAt = nowMs()
@@ -226,10 +226,11 @@ func SetupHTTP(node *Node) http.Handler {
 					}
 					continue
 				}
-				defer resp.Body.Close()
 				dst, err := os.Create(path)
 				if err == nil {
-					if _, err := io.Copy(dst, resp.Body); err != nil {
+					_, copyErr := io.Copy(dst, resp.Body)
+					resp.Body.Close()
+					if copyErr != nil {
 						dst.Close()
 						os.Remove(path)
 						continue
@@ -239,6 +240,7 @@ func SetupHTTP(node *Node) http.Handler {
 					http.ServeFile(w, r, path)
 					return
 				}
+				resp.Body.Close()
 			}
 			http.Error(w, "file not found", 404)
 			return
