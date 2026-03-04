@@ -4,6 +4,8 @@
 
 Share text, code, images, and files between devices on your local network. Zero config.
 
+![img.png](assets/img.png)
+
 ## Quick Start
 
 ```bash
