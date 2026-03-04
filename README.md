@@ -64,10 +64,7 @@ Hub-Spoke with auto-election:
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl/Cmd + N` | New pane |
-| `Ctrl/Cmd + P` | Toggle preview |
 | `Alt + W` | Toggle word wrap |
-| `Ctrl/Cmd + B` | Toggle sidebar |
 
 ## Options
 

@@ -746,17 +746,8 @@ function setupListeners() {
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', handleDrop);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (only non-conflicting ones; avoid Ctrl/Cmd combos that browsers use)
   document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); createPane(); }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
-      e.preventDefault();
-      if (getSelectedPane()) togglePreview();
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-      e.preventDefault();
-      toggleSidebar();
-    }
     if (e.altKey && e.key.toLowerCase() === 'w') {
       e.preventDefault();
       toggleWrap();
