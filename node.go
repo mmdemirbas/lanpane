@@ -327,6 +327,15 @@ func (n *Node) acceptSpokeConn(conn *websocket.Conn) error {
 	n.sendToClient(client, WSMessage{Type: "sync", Payload: syncData})
 	n.broadcastDevices()
 	n.notifySSE()
+
+	// Set up hub-side keepalive: detect dead spoke connections
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		return nil
+	})
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	go n.hubPinger(client)
+
 	n.hubReadLoop(client)
 	return nil
 }
@@ -401,6 +410,9 @@ func (n *Node) broadcast(msg WSMessage, excludeID string) {
 			select {
 			case client.sendCh <- data:
 			default:
+				// Channel full — slow/dead client, force disconnect
+				log.Printf("[hub] evicting slow client %s (broadcast)", client.device.Name)
+				client.conn.Close()
 			}
 		}
 	}
@@ -439,16 +451,43 @@ func (n *Node) sendToClient(client *Client, msg WSMessage) {
 	select {
 	case client.sendCh <- data:
 	default:
+		// Channel full — slow/dead client, force disconnect
+		log.Printf("[hub] evicting slow client %s", client.device.Name)
+		client.conn.Close()
 	}
 }
 
 func (n *Node) clientWriter(client *Client) {
 	for data := range client.sendCh {
 		client.mu.Lock()
+		client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		err := client.conn.WriteMessage(websocket.TextMessage, data)
 		client.mu.Unlock()
 		if err != nil {
+			// Force-close so hubReadLoop unblocks and runs cleanup
+			client.conn.Close()
 			return
+		}
+	}
+}
+
+// hubPinger sends periodic pings to a spoke client to detect dead connections.
+func (n *Node) hubPinger(client *Client) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-n.hubStopCh:
+			return
+		case <-ticker.C:
+			client.mu.Lock()
+			client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			err := client.conn.WriteMessage(websocket.PingMessage, nil)
+			client.mu.Unlock()
+			if err != nil {
+				client.conn.Close()
+				return
+			}
 		}
 	}
 }
@@ -537,6 +576,19 @@ func (n *Node) hasHubConn() bool {
 }
 
 func (n *Node) runSpokeConn(conn *websocket.Conn, sendAuth bool) error {
+	// Send auth BEFORE exposing conn to other goroutines to prevent concurrent writes
+	if sendAuth {
+		token := normalizeToken(n.store.config.SavedToken)
+		auth := WSMessage{Type: "auth", Payload: AuthPayload{Token: token, DeviceID: n.store.config.DeviceID, DeviceName: n.store.config.DeviceName, Port: n.port}}
+		data, _ := json.Marshal(auth)
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			conn.Close()
+			return err
+		}
+	}
+
+	// Now safely publish the connection
 	n.hubConnMu.Lock()
 	if n.hubConn != nil && n.hubConn != conn {
 		n.hubConn.Close()
@@ -553,21 +605,13 @@ func (n *Node) runSpokeConn(conn *websocket.Conn, sendAuth bool) error {
 		conn.Close()
 	}()
 
-	// Set up keepalive pings
+	// Set up keepalive pings with initial read deadline
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		return nil
 	})
 	go n.spokePinger(conn)
-
-	if sendAuth {
-		token := normalizeToken(n.store.config.SavedToken)
-		auth := WSMessage{Type: "auth", Payload: AuthPayload{Token: token, DeviceID: n.store.config.DeviceID, DeviceName: n.store.config.DeviceName, Port: n.port}}
-		data, _ := json.Marshal(auth)
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			return err
-		}
-	}
 
 	// Read loop
 	for {
@@ -575,6 +619,8 @@ func (n *Node) runSpokeConn(conn *websocket.Conn, sendAuth bool) error {
 		if err != nil {
 			return fmt.Errorf("read error: %w", err)
 		}
+		// Reset deadline on any successful read (hub may send data instead of pong)
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		var msg WSMessage
 		if err := json.Unmarshal(msgData, &msg); err != nil {
 			continue
@@ -596,9 +642,11 @@ func (n *Node) spokePinger(conn *websocket.Conn) {
 				n.hubConnMu.Unlock()
 				return
 			}
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			err := conn.WriteMessage(websocket.PingMessage, nil)
 			n.hubConnMu.Unlock()
 			if err != nil {
+				conn.Close()
 				return
 			}
 		}
@@ -722,6 +770,7 @@ func (n *Node) SendToHub(msg WSMessage) error {
 		return fmt.Errorf("not connected to hub")
 	}
 	data, _ := json.Marshal(msg)
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 
