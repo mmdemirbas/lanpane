@@ -298,44 +298,49 @@ kbd {
   background: var(--bg-0);
 }
 
-.editor-highlight {
+.editor-highlight,
+.editor {
   position: absolute; inset: 0;
   margin: 0;
   padding: 16px 20px;
-  overflow: auto;
   font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  letter-spacing: normal; word-spacing: normal;
   tab-size: 2;
   white-space: pre;
-  pointer-events: none;
-  scrollbar-width: none;
+  border: none;
 }
 
-.editor-highlight::-webkit-scrollbar { display: none; }
+.editor-highlight {
+  overflow: hidden;
+  pointer-events: none;
+}
 
 .editor-highlight code {
   display: block;
   min-height: 100%;
   background: transparent !important;
   padding: 0 !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  letter-spacing: inherit !important;
+  word-spacing: inherit !important;
+  tab-size: inherit !important;
 }
 
 .editor {
-  width: 100%; height: 100%;
-  background: transparent; border: none; color: transparent;
+  background: transparent; color: transparent;
   caret-color: var(--text-0);
-  font-family: var(--mono); font-size: 13px; line-height: 1.6;
-  padding: 16px 20px; resize: none; outline: none;
-  tab-size: 2; overflow: auto;
-  white-space: pre;
-  position: relative; z-index: 1;
+  resize: none; outline: none;
+  overflow: auto;
+  z-index: 1;
 }
 
 .editor::selection { background: var(--accent-dim); }
 .editor::placeholder { color: var(--text-2); }
 
 #app.wrap-enabled .editor-highlight,
-#app.wrap-enabled .editor { white-space: pre-wrap; }
-#app.wrap-enabled .editor { word-break: break-word; }
+#app.wrap-enabled .editor { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
 #app.wrap-enabled .preview-output pre { white-space: pre-wrap; word-break: break-word; }
 
 .preview-output { width: 100%; height: 100%;

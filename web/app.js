@@ -571,6 +571,11 @@ function syncEditorScroll() {
   if (!editor || !highlight) return;
   highlight.scrollTop = editor.scrollTop;
   highlight.scrollLeft = editor.scrollLeft;
+  // Compensate for textarea scrollbar so content areas match
+  const sbW = editor.offsetWidth - editor.clientWidth;
+  const sbH = editor.offsetHeight - editor.clientHeight;
+  highlight.style.paddingRight = sbW > 0 ? (20 + sbW) + 'px' : '';
+  highlight.style.paddingBottom = sbH > 0 ? (16 + sbH) + 'px' : '';
 }
 
 // ---- Listeners ----
@@ -757,6 +762,9 @@ function setupListeners() {
       toggleWrap();
     }
   });
+
+  // Resize: re-sync highlight overlay padding for scrollbar compensation
+  window.addEventListener('resize', syncEditorScroll);
 }
 
 function clearDragMarkers() {
