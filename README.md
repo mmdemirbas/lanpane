@@ -65,36 +65,32 @@ Hub-Spoke with auto-election:
 | Shortcut | Action |
 |---|---|
 | `Alt + W` | Toggle word wrap |
+| `Escape` | Exit preview mode |
 
 ## Options
 
 ```
 go run . -port 8080         # Use a different port (default: 7753)
-go run . -auth optional     # No access code needed (default)
-go run . -auth required     # Require access code on spokes
 ```
-
-Default auth mode is `optional` (stored in `~/.lanpane/config.json` as `authMode`).
 
 All traffic uses HTTPS with an auto-generated self-signed certificate stored in `~/.lanpane/certs/`. On first access, your browser will show a certificate warning — accept it once to proceed.
 
 ## Data Storage
 
 All data is stored in `~/.lanpane/`:
-- `config.json` — device ID, name, token settings
+- `config.json` — device ID and name
 - `panes.json` — all pane content
 - `files/` — uploaded files and images
 - `certs/` — auto-generated TLS certificate and key
 
 ## Security Notes
 
-LanPane is designed for **trusted local networks**. Key security properties:
+LanPane is designed for **trusted local networks**.
 
-- **Auth is optional by default.** In `optional` mode, any device on the LAN can connect without a code. Use `-auth required` for access control.
-- **HTTP API endpoints are unauthenticated.** Auth is enforced at the WebSocket layer. Any device that can reach the HTTP port can read/write panes via the REST API. This is by design for LAN simplicity.
+- **No authentication.** Any device on the LAN can connect and read/write panes. This is by design for zero-friction LAN sharing.
 - **WebSocket origin checks are disabled** to allow access from any local browser.
 - **CORS is permissive** (`Access-Control-Allow-Origin: *`) on the SSE endpoint for the same reason.
-- **Self-signed HTTPS** is available to avoid browser mixed-content warnings, but does not provide CA-trusted encryption.
+- **Self-signed HTTPS** is used for all traffic to avoid browser mixed-content warnings, but does not provide CA-trusted encryption.
 - **Markdown content is sanitized** with DOMPurify before rendering to prevent XSS.
 
 This tool is **not intended for use over the public internet**.

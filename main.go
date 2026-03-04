@@ -10,14 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 )
 
 func main() {
 	port := flag.Int("port", 7753, "HTTPS port")
-	authMode := flag.String("auth", "", "Auth mode: optional or required (defaults to value in config, first run is optional)")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime | log.Lshortfile)
@@ -25,9 +23,6 @@ func main() {
 	store, err := NewStore()
 	if err != nil {
 		log.Fatalf("failed to init store: %v", err)
-	}
-	if mode := strings.TrimSpace(*authMode); mode != "" {
-		store.SetAuthMode(mode)
 	}
 
 	node := NewNode(store, *port)
@@ -49,12 +44,10 @@ func main() {
 	role := node.GetRole()
 	if role == "hub" {
 		fmt.Printf("  │  Role:  HUB                             │\n")
-		fmt.Printf("  │  Code:  %-6s                           │\n", node.token)
 	} else {
 		fmt.Printf("  │  Role:  SPOKE                           │\n")
 		fmt.Printf("  │  Hub:   %-33s│\n", node.hubAddr)
 	}
-	fmt.Printf("  │  Auth:  %-10s                        │\n", strings.ToUpper(store.config.AuthMode))
 	fmt.Printf("  │  Open:  %-33s│\n", url)
 	fmt.Printf("  │  OS:    %-10s                        │\n", runtime.GOOS)
 	fmt.Println("  ╰─────────────────────────────────────────╯")
@@ -118,25 +111,10 @@ func setupSSE(node *Node, mux *http.ServeMux) {
 }
 
 func sendSSEState(w http.ResponseWriter, flusher http.Flusher, node *Node) {
-	needsToken := false
-	if node.GetRole() == "spoke" && node.IsAuthRequired() && (normalizeToken(node.store.config.SavedToken) == "" || node.SpokeNeedsToken()) {
-		needsToken = true
-	}
-
-	role := node.GetRole()
-	tokenForUI := ""
-	if role == "hub" {
-		tokenForUI = node.token
-	}
-
 	data := map[string]interface{}{
-		"panes":        node.store.GetPanes(),
-		"devices":      node.getDevices(),
-		"role":         role,
-		"token":        tokenForUI,
-		"needsToken":   needsToken,
-		"authMode":     node.store.config.AuthMode,
-		"authRequired": node.IsAuthRequired(),
+		"panes":   node.store.GetPanes(),
+		"devices": node.getDevices(),
+		"role":    node.GetRole(),
 	}
 	jsonData, _ := json.Marshal(data)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)

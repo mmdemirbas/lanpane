@@ -14,16 +14,6 @@
 </head>
 <body>
   <div id="app">
-    <div id="token-overlay" class="overlay hidden">
-      <div class="overlay-card">
-        <div class="overlay-icon">🔑</div>
-        <h2>Enter Access Code</h2>
-        <p>Enter the 6-character code shown on the hub device</p>
-        <input type="text" id="token-input" maxlength="6" placeholder="ABC123" autocomplete="off" spellcheck="false">
-        <button id="token-submit">Connect</button>
-      </div>
-    </div>
-
     <aside id="sidebar">
       <div class="sidebar-header">
         <div class="logo">
@@ -36,7 +26,6 @@
       </div>
       <div class="pane-list" id="pane-list"></div>
       <div class="sidebar-footer">
-        <div id="hub-token-area"></div>
         <div class="device-list" id="device-list"></div>
         <div class="status-bar">
           <span class="status-dot"></span>
@@ -53,6 +42,8 @@
         <div class="shortcut-hints">
           <kbd>Ctrl+V</kbd> paste image &nbsp; <kbd>Drop</kbd> files
         </div>
+        <button id="choose-file-btn" class="choose-file-btn" style="margin-top:16px;padding:8px 20px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-1);cursor:pointer;font-family:var(--font);font-size:13px;">📎 Choose Files</button>
+        <input type="file" id="file-input" multiple hidden>
       </div>
 
       <div id="pane-view" class="pane-view hidden">

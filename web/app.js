@@ -5,9 +5,7 @@ let state = {
   devices: [],
   selectedPaneId: null,
   role: '',
-  token: '',
   deviceId: '',
-  needsToken: false,
   connected: false,
   sidebarCollapsed: false,
   wrapEnabled: false,
@@ -248,9 +246,7 @@ async function fetchStatus() {
     const res = await fetch(API + '/api/status');
     const data = await res.json();
     state.role = data.role;
-    state.token = data.token;
     state.deviceId = data.deviceId;
-    state.needsToken = data.needsToken;
     state.panes = sortPanes(data.panes || []);
     state.devices = data.devices || [];
     state.connected = true;
@@ -314,16 +310,6 @@ async function uploadFile(file) {
   return await res.json();
 }
 
-async function submitToken(token) {
-  await fetch(API + '/api/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token })
-  });
-  state.needsToken = false;
-  setTimeout(async () => { await fetchStatus(); render(); }, 2000);
-}
-
 // ---- SSE ----
 function setupEventSource() {
   if (eventSource) eventSource.close();
@@ -347,7 +333,6 @@ function setupEventSource() {
 
       renderSidebar();
       renderStatusBar();
-      renderOverlay();
       // Sync editor: language, preview state, content
       renderEditor();
     } catch (err) {}
@@ -361,20 +346,9 @@ function setupEventSource() {
 
 // ---- Render ----
 function render() {
-  renderOverlay();
   renderSidebar();
   renderEditor();
   renderStatusBar();
-}
-
-function renderOverlay() {
-  const el = document.getElementById('token-overlay');
-  if (state.needsToken) {
-    el.classList.remove('hidden');
-    setTimeout(() => document.getElementById('token-input').focus(), 50);
-  } else {
-    el.classList.add('hidden');
-  }
 }
 
 function renderSidebar() {
@@ -415,11 +389,6 @@ function renderSidebar() {
     if (!currentIds.has(id)) delete paneMeta[id];
   });
 
-  const tokenArea = document.getElementById('hub-token-area');
-  tokenArea.innerHTML = (state.role === 'hub' && state.token)
-    ? `<div class="hub-token"><span class="hub-token-label">Code</span><span class="hub-token-value">${esc(state.token)}</span></div>`
-    : '';
-
   const devList = document.getElementById('device-list');
   devList.innerHTML = state.devices.map(d => {
     const self = d.id === state.deviceId ? ' (you)' : '';
@@ -438,8 +407,8 @@ function renderStatusBar() {
     dot.className = 'status-dot connected';
     text.textContent = state.role === 'hub' ? 'hub' : 'spoke';
   } else {
-    dot.className = 'status-dot error';
-    text.textContent = 'disconnected';
+    dot.className = 'status-dot reconnecting';
+    text.textContent = 'reconnecting…';
   }
 }
 
@@ -609,8 +578,19 @@ function setupListeners() {
     const delBtn = e.target.closest('.pane-item-delete');
     if (delBtn) {
       const id = delBtn.dataset.deleteId;
-      if (id && confirm('Delete this pane?')) {
+      if (!id) return;
+      // Inline confirm: first click marks pending, second click within 2s confirms
+      if (delBtn.classList.contains('confirm-pending')) {
         deletePane(id);
+      } else {
+        // Clear any other pending deletes
+        document.querySelectorAll('.pane-item-delete.confirm-pending').forEach(b => b.classList.remove('confirm-pending'));
+        delBtn.classList.add('confirm-pending');
+        delBtn.title = 'Click again to confirm';
+        setTimeout(() => {
+          delBtn.classList.remove('confirm-pending');
+          delBtn.title = 'Delete';
+        }, 2000);
       }
       return;
     }
@@ -744,13 +724,14 @@ function setupListeners() {
   // Preview selection allowed - no toggle on click
   // (user should use the button to exit preview, allowing copy/selection)
 
-  // Token
-  document.getElementById('token-submit').addEventListener('click', () => {
-    const val = document.getElementById('token-input').value.trim();
-    if (val) submitToken(val);
+  // File chooser (for mobile users who can't drag-and-drop)
+  document.getElementById('choose-file-btn').addEventListener('click', () => {
+    document.getElementById('file-input').click();
   });
-  document.getElementById('token-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { const val = e.target.value.trim(); if (val) submitToken(val); }
+  document.getElementById('file-input').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length) await handleDroppedFiles(files);
+    e.target.value = '';
   });
 
   // Global paste
@@ -769,10 +750,22 @@ function setupListeners() {
       e.preventDefault();
       toggleWrap();
     }
+    if (e.key === 'Escape') {
+      const pane = getSelectedPane();
+      if (pane && isPanePreviewing(pane.id)) {
+        setPanePreviewing(pane.id, false);
+        debouncedSave(pane);
+        renderEditor();
+        focusEditor();
+      }
+    }
   });
 
   // Resize: re-sync highlight overlay padding for scrollbar compensation
   window.addEventListener('resize', syncEditorScroll);
+
+  // Live-update sidebar timestamps every 30s
+  setInterval(() => renderSidebar(), 30000);
 }
 
 function clearDragMarkers() {
@@ -887,6 +880,11 @@ async function handleDrop(e) {
   document.body.classList.remove('drop-active');
   const files = e.dataTransfer?.files;
   if (!files || files.length === 0) return;
+  await handleDroppedFiles(Array.from(files));
+}
+
+async function handleDroppedFiles(files) {
+  if (!files || files.length === 0) return;
 
   let pane = getSelectedPane();
   if (!pane) {
@@ -900,12 +898,16 @@ async function handleDrop(e) {
   }
 
   for (const file of files) {
-    const result = await uploadFile(file);
-    const url = `/api/files/${result.fileId}`;
-    const insertion = file.type.startsWith('image/')
-      ? `![${result.fileName}](${url})`
-      : `[📎 ${result.fileName}](${url})`;
-    pane.content = (pane.content ? pane.content + '\n\n' : '') + insertion + '\n';
+    try {
+      const result = await uploadFile(file);
+      const url = `/api/files/${result.fileId}`;
+      const insertion = file.type.startsWith('image/')
+        ? `![${result.fileName}](${url})`
+        : `[📎 ${result.fileName}](${url})`;
+      pane.content = (pane.content ? pane.content + '\n\n' : '') + insertion + '\n';
+    } catch (err) {
+      showToast(`Upload failed: ${file.name}`, true);
+    }
   }
 
   document.getElementById('editor').value = pane.content;
@@ -923,7 +925,7 @@ function debouncedSave(pane) {
 
 async function savePaneNow(pane) {
   clearTimeout(saveTimer);
-  try { await updatePane(pane); } catch (e) { console.error('Save failed:', e); }
+  try { await updatePane(pane); } catch (e) { showToast('Save failed — check connection', true); }
 }
 
 // ---- Helpers ----
@@ -976,9 +978,10 @@ function timeAgo(ts) {
   return Math.floor(diff / 86400000) + 'd';
 }
 
-function showToast(msg) {
+function showToast(msg, isError = false) {
   const toast = document.getElementById('toast');
   toast.textContent = msg;
+  toast.classList.toggle('error', isError);
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), 2000);
 }
