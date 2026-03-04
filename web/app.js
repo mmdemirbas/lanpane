@@ -331,14 +331,20 @@ function setupEventSource() {
   eventSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      const oldIds = new Set(state.panes.map(p => p.id));
       const selId = state.selectedPaneId;
       state.panes = sortPanes(data.panes || []);
       state.devices = data.devices || [];
       state.role = data.role || state.role;
-      if (data.token) state.token = data.token;
-      if (typeof data.needsToken === 'boolean') state.needsToken = data.needsToken;
       state.connected = true;
       state.selectedPaneId = selId;
+
+      // Auto-select panes added by other devices
+      const newRemotePane = state.panes.find(p => !oldIds.has(p.id) && p.createdBy !== state.deviceId);
+      if (newRemotePane) {
+        state.selectedPaneId = newRemotePane.id;
+      }
+
       renderSidebar();
       renderStatusBar();
       renderOverlay();
