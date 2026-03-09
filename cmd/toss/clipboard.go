@@ -29,6 +29,8 @@ type ClipboardMonitor struct {
 	lastWrittenText      string
 	lastImageHash        string
 	lastWrittenImageHash string
+	lastFileHash         string
+	lastWrittenFileHash  string
 	imgCheckCounter      int
 	running              bool
 	stopCh               chan struct{}
@@ -55,6 +57,10 @@ func (cm *ClipboardMonitor) Start() {
 	// Seed image hash (may be slow, but runs once).
 	if hash, _, _, err := readClipboardImage(); err == nil && hash != "" {
 		cm.lastImageHash = hash
+	}
+	// Seed file hash.
+	if paths, err := readClipboardFiles(); err == nil && len(paths) > 0 {
+		cm.lastFileHash = hashFilePaths(paths)
 	}
 	cm.mu.Unlock()
 
@@ -114,6 +120,7 @@ func (cm *ClipboardMonitor) check() {
 		cm.mu.Lock()
 		cm.lastText = text
 		cm.lastImageHash = "" // clipboard is now text
+		cm.lastFileHash = ""  // clipboard is now text
 		cm.mu.Unlock()
 
 		if len(text) > clipboardMaxTextSize {
@@ -131,9 +138,13 @@ func (cm *ClipboardMonitor) check() {
 		return
 	}
 
-	// ── Image check (on text-cleared or periodic) ────────────────────
+	// ── File or Image check (on text-cleared or periodic) ──────
+	// Check files first: a copied file may also have an image preview
+	// on the clipboard (macOS), so file detection takes priority.
 	if textCleared || periodicImageCheck {
-		cm.handleImageCheck(text)
+		if !cm.handleFileCheck(text) {
+			cm.handleImageCheck(text)
+		}
 	}
 }
 
@@ -157,6 +168,7 @@ func (cm *ClipboardMonitor) handleImageCheck(currentText string) {
 	}
 	cm.lastImageHash = imgHash
 	cm.lastText = currentText
+	cm.lastFileHash = "" // clipboard is now image
 	cm.mu.Unlock()
 
 	if len(imgData) > clipboardMaxImageSize {
@@ -187,6 +199,8 @@ func (cm *ClipboardMonitor) WriteClipboard(content string) {
 	cm.mu.Lock()
 	cm.lastWrittenText = content
 	cm.lastText = content
+	cm.lastFileHash = ""  // clipboard is now text from peer
+	cm.lastImageHash = "" // clipboard is now text from peer
 	cm.mu.Unlock()
 
 	if err := clipboard.WriteAll(content); err != nil {
@@ -204,7 +218,8 @@ func (cm *ClipboardMonitor) WriteClipboardImageData(imgData []byte, ext string) 
 	cm.mu.Lock()
 	cm.lastWrittenImageHash = hash
 	cm.lastImageHash = hash
-	cm.lastText = "" // image on clipboard now
+	cm.lastText = ""     // image on clipboard now
+	cm.lastFileHash = "" // clipboard is now image from peer
 	cm.mu.Unlock()
 
 	// Write to temp file, then to clipboard (OS tools require files).
@@ -219,6 +234,96 @@ func (cm *ClipboardMonitor) WriteClipboardImageData(imgData []byte, ext string) 
 		log.Printf("[clipboard] write image error: %v", err)
 	} else {
 		log.Printf("[clipboard] wrote image to clipboard from peer (%d bytes)", len(imgData))
+	}
+}
+
+// handleFileCheck detects file copies on the clipboard.
+// Returns true if files are present (even if unchanged), preventing image check.
+func (cm *ClipboardMonitor) handleFileCheck(currentText string) bool {
+	paths, err := readClipboardFiles()
+	if err != nil || len(paths) == 0 {
+		return false
+	}
+
+	fileHash := hashFilePaths(paths)
+
+	cm.mu.Lock()
+	if fileHash == cm.lastFileHash || fileHash == cm.lastWrittenFileHash {
+		cm.lastText = currentText
+		cm.mu.Unlock()
+		return true // files present but unchanged
+	}
+	cm.lastFileHash = fileHash
+	cm.lastText = currentText
+	cm.lastImageHash = "" // clipboard is now files, not image
+	cm.mu.Unlock()
+
+	// Filter: only regular files within size limits
+	validPaths := cm.filterValidFiles(paths)
+	if len(validPaths) == 0 {
+		return true
+	}
+
+	log.Printf("[clipboard] detected %d file(s)", len(validPaths))
+
+	cfg := cm.node.store.GetClipboardConfig()
+
+	// Store and forward files once (shared by autoTab and sync)
+	files := cm.node.storeAndForwardFiles(validPaths)
+	if len(files) == 0 {
+		return true
+	}
+
+	if cfg.AutoTab {
+		cm.node.createClipboardFilePaneFromRefs(files)
+	}
+	if cfg.SyncEnabled {
+		cm.node.broadcastClipboardContent(ClipboardPayload{Files: files})
+	}
+	return true
+}
+
+// filterValidFiles removes directories, too-large files, and enforces the max count.
+func (cm *ClipboardMonitor) filterValidFiles(paths []string) []string {
+	var valid []string
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			log.Printf("[clipboard] skipping %s: %v", filepath.Base(p), err)
+			continue
+		}
+		if info.IsDir() {
+			log.Printf("[clipboard] skipping directory: %s", filepath.Base(p))
+			continue
+		}
+		if info.Size() > clipboardMaxFileSize {
+			log.Printf("[clipboard] skipping %s: too large (%d bytes)", filepath.Base(p), info.Size())
+			continue
+		}
+		valid = append(valid, p)
+	}
+	if len(valid) > clipboardMaxFileCount {
+		log.Printf("[clipboard] too many files (%d), limiting to %d", len(valid), clipboardMaxFileCount)
+		valid = valid[:clipboardMaxFileCount]
+	}
+	return valid
+}
+
+// WriteClipboardFiles writes file paths received from a peer without triggering an echo.
+func (cm *ClipboardMonitor) WriteClipboardFiles(paths []string) {
+	hash := hashFilePaths(paths)
+
+	cm.mu.Lock()
+	cm.lastWrittenFileHash = hash
+	cm.lastFileHash = hash
+	cm.lastText = ""      // files on clipboard now
+	cm.lastImageHash = "" // clipboard is now files from peer
+	cm.mu.Unlock()
+
+	if err := writeClipboardFiles(paths); err != nil {
+		log.Printf("[clipboard] write files error: %v", err)
+	} else {
+		log.Printf("[clipboard] wrote %d file(s) to clipboard from peer", len(paths))
 	}
 }
 

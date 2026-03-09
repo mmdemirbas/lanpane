@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -390,7 +391,9 @@ func (n *Node) hubReadLoop(client *Client) {
 			// Write to hub's clipboard if sync enabled
 			cfg := n.store.GetClipboardConfig()
 			if cfg.SyncEnabled && n.clipboard != nil {
-				if payload.ImageData != "" {
+				if len(payload.Files) > 0 {
+					go n.receiveClipboardFiles(payload.Files, client.httpAddr)
+				} else if payload.ImageData != "" {
 					if imgBytes, err := base64.StdEncoding.DecodeString(payload.ImageData); err == nil {
 						n.clipboard.WriteClipboardImageData(imgBytes, payload.ImageExt)
 					}
@@ -722,7 +725,9 @@ func (n *Node) handleSpokeMessage(msg WSMessage) {
 		// Write to local clipboard if sync enabled
 		cfg := n.store.GetClipboardConfig()
 		if cfg.SyncEnabled && n.clipboard != nil {
-			if payload.ImageData != "" {
+			if len(payload.Files) > 0 {
+				go n.receiveClipboardFiles(payload.Files, n.hubAddr)
+			} else if payload.ImageData != "" {
 				if imgBytes, err := base64.StdEncoding.DecodeString(payload.ImageData); err == nil {
 					n.clipboard.WriteClipboardImageData(imgBytes, payload.ImageExt)
 				}
@@ -877,6 +882,153 @@ func (n *Node) createClipboardImagePane(imgData []byte, ext, fileName string) {
 	log.Printf("[clipboard] created image pane: %s", pane.Name)
 }
 
+// storeAndForwardFiles copies local files into the file store, forwards them
+// to peers, and returns metadata references for use in clipboard_update or panes.
+func (n *Node) storeAndForwardFiles(paths []string) []ClipboardFileRef {
+	var files []ClipboardFileRef
+	for _, p := range paths {
+		fileName := filepath.Base(p)
+		fileID := generateID() + filepath.Ext(p)
+
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[clipboard] failed to read %s: %v", fileName, err)
+			continue
+		}
+		storePath := n.store.FilePath(fileID)
+		if err := os.WriteFile(storePath, data, 0644); err != nil {
+			log.Printf("[clipboard] failed to store %s: %v", fileName, err)
+			continue
+		}
+
+		files = append(files, ClipboardFileRef{
+			FileID:   fileID,
+			FileName: fileName,
+			FileSize: int64(len(data)),
+		})
+		log.Printf("[clipboard] stored file %s as %s (%d bytes)", fileName, fileID, len(data))
+
+		if n.GetRole() == "spoke" && n.hubAddr != "" {
+			go forwardFileWithRetry(n, fileID, fileName)
+		}
+		if n.GetRole() == "hub" {
+			n.broadcast(WSMessage{Type: "file_notify", Payload: FileNotifyPayload{
+				FileID: fileID, FileName: fileName, SenderID: n.store.config.DeviceID,
+			}}, "")
+		}
+	}
+	return files
+}
+
+// createClipboardFilePaneFromRefs creates a markdown pane listing the given files.
+func (n *Node) createClipboardFilePaneFromRefs(files []ClipboardFileRef) {
+	if len(files) == 0 {
+		return
+	}
+
+	var content strings.Builder
+	for _, f := range files {
+		content.WriteString(fmt.Sprintf("- [%s](/api/files/%s)\n", f.FileName, f.FileID))
+	}
+
+	name := fmt.Sprintf("📋 %d file(s)", len(files))
+	if len(files) == 1 {
+		name = "📋 " + files[0].FileName
+	}
+
+	preview := true
+	pane := Pane{
+		ID:        generateID(),
+		Name:      name,
+		Type:      "code",
+		Content:   content.String(),
+		Language:  "markdown",
+		Preview:   &preview,
+		Order:     nowMs(),
+		CreatedBy: n.store.config.DeviceID,
+		CreatedAt: nowMs(),
+		UpdatedAt: nowMs(),
+		Version:   nowMs(),
+	}
+	n.store.UpsertPane(pane)
+	update := WSMessage{Type: "pane_update", Payload: PaneUpdatePayload{Pane: pane, SenderID: n.store.config.DeviceID}}
+	if n.GetRole() == "hub" {
+		n.broadcast(update, "")
+	} else {
+		n.SendToHub(update)
+	}
+	n.notifySSE()
+	log.Printf("[clipboard] created file pane: %s", pane.Name)
+}
+
+// receiveClipboardFiles fetches files referenced in a clipboard_update from a
+// peer, saves them with their original names, and writes the paths to the
+// system clipboard so the user can paste them.
+func (n *Node) receiveClipboardFiles(files []ClipboardFileRef, fetchAddr string) {
+	recvDir := filepath.Join(n.store.dir, "clipboard_received")
+	os.MkdirAll(recvDir, 0755)
+
+	// Clean up files from previous clipboard sync
+	entries, _ := os.ReadDir(recvDir)
+	for _, e := range entries {
+		os.Remove(filepath.Join(recvDir, e.Name()))
+	}
+
+	var receivedPaths []string
+	for _, f := range files {
+		// Ensure the file is in our local store (fetch from peer if missing)
+		srcPath := n.store.FilePath(f.FileID)
+		for attempt := 0; attempt < 3; attempt++ {
+			if _, err := os.Stat(srcPath); err == nil {
+				break
+			}
+			if fetchAddr != "" {
+				n.fetchFileFromAddr(f.FileID, fetchAddr)
+			}
+			if _, err := os.Stat(srcPath); err == nil {
+				break
+			}
+			// Also try hub (if we're a spoke and fetchAddr was something else)
+			if n.GetRole() == "spoke" && n.hubAddr != "" && n.hubAddr != fetchAddr {
+				n.fetchFileFromAddr(f.FileID, n.hubAddr)
+			}
+			if _, err := os.Stat(srcPath); err == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if _, err := os.Stat(srcPath); err != nil {
+			log.Printf("[clipboard] file %s (%s) not available after retries", f.FileName, f.FileID)
+			continue
+		}
+
+		// Copy to received dir with original name
+		dstPath := filepath.Join(recvDir, f.FileName)
+		if _, err := os.Stat(dstPath); err == nil {
+			// Name collision — add a short suffix
+			ext := filepath.Ext(f.FileName)
+			base := strings.TrimSuffix(f.FileName, ext)
+			dstPath = filepath.Join(recvDir, base+"_"+generateID()[:4]+ext)
+		}
+
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			log.Printf("[clipboard] failed to read stored file %s: %v", f.FileID, err)
+			continue
+		}
+		if err := os.WriteFile(dstPath, data, 0644); err != nil {
+			log.Printf("[clipboard] failed to write %s: %v", filepath.Base(dstPath), err)
+			continue
+		}
+		receivedPaths = append(receivedPaths, dstPath)
+	}
+
+	if len(receivedPaths) > 0 {
+		n.clipboard.WriteClipboardFiles(receivedPaths)
+	}
+}
+
 // broadcastClipboardContent sends a self-contained clipboard_update to peers.
 // For text the Content field carries the text; for images the ImageData field
 // carries base64-encoded bytes so receivers can write to clipboard directly
@@ -891,6 +1043,8 @@ func (n *Node) broadcastClipboardContent(payload ClipboardPayload) {
 	}
 	if payload.ImageData != "" {
 		log.Printf("[clipboard] sent clipboard image update (%d bytes encoded)", len(payload.ImageData))
+	} else if len(payload.Files) > 0 {
+		log.Printf("[clipboard] sent clipboard file update (%d file(s))", len(payload.Files))
 	} else {
 		log.Printf("[clipboard] sent clipboard update (%d bytes)", len(payload.Content))
 	}

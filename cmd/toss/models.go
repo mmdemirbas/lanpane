@@ -72,11 +72,18 @@ type DemotePayload struct {
 	HubPort     int    `json:"hubPort"`
 }
 
+type ClipboardFileRef struct {
+	FileID   string `json:"fileId"`
+	FileName string `json:"fileName"`
+	FileSize int64  `json:"fileSize"`
+}
+
 type ClipboardPayload struct {
-	Content   string `json:"content,omitempty"`   // text clipboard
-	ImageData string `json:"imageData,omitempty"` // base64-encoded image
-	ImageExt  string `json:"imageExt,omitempty"`  // e.g. ".png"
-	SenderID  string `json:"senderId"`
+	Content   string             `json:"content,omitempty"`   // text clipboard
+	ImageData string             `json:"imageData,omitempty"` // base64-encoded image
+	ImageExt  string             `json:"imageExt,omitempty"`  // e.g. ".png"
+	Files     []ClipboardFileRef `json:"files,omitempty"`     // copied files
+	SenderID  string             `json:"senderId"`
 }
 
 type ClipboardConfig struct {
